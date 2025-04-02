@@ -12,54 +12,38 @@ from math import erf, sqrt
 from scipy.stats import norm
 from typing import Tuple, List, Any
 
-
-
 warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-
 @lru_cache(maxsize=1)
-def get_sp500_tickers() -> List[str]:
-    
-
-
+def get_nasdaq_tickers() -> List[str]:
     try:
-        df = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")[0]
-        return df["Symbol"].tolist()
+        tables = pd.read_html("https://en.wikipedia.org/wiki/NASDAQ-100")
+        for table in tables:
+            if "Ticker" in table.columns:
+                tickers = table["Ticker"].tolist()
+                return [ticker.strip() for ticker in tickers]
+        return tables[0]["Ticker"].tolist()
     except Exception as e:
-        logging.error("Error fetching S&P 500 tickers: %s", e)
+        logging.error("Error fetching Nasdaq-100 tickers: %s", e)
         return []
 
-
-
-
 class DataManager:
-    
-
-
     def __init__(self, start_date: str, end_date: str, fred_api_key: str) -> None:
         self.start_date = start_date
         self.end_date = end_date
         self.fred = Fred(api_key=fred_api_key)
 
-
-
-
     @lru_cache(maxsize=32)
     def get_history(self, ticker: str) -> pd.DataFrame:
-        
         try:
             return yf.Ticker(ticker).history(start=self.start_date, end=self.end_date)
         except Exception as e:
             logging.error("Error fetching history for %s: %s", ticker, e)
             return pd.DataFrame()
 
-
-
-
     @lru_cache(maxsize=32)
     def get_fred_series(self, series_code: str) -> pd.DataFrame:
-        
         try:
             data = self.fred.get_series(series_code)
             df = pd.DataFrame(data, columns=[series_code]).dropna()
@@ -70,13 +54,7 @@ class DataManager:
             logging.error("Error fetching FRED series %s: %s", series_code, e)
             return pd.DataFrame()
 
-
-
-
 class Indicator:
-    
-
-
     def __init__(self, data_manager: DataManager) -> None:
         self.dm = data_manager
 
@@ -85,9 +63,6 @@ class Indicator:
 
     @staticmethod
     def scale_with_history(values: np.ndarray, current: float) -> float:
-        
-
-
         values = np.array(values)
         if len(values) < 10:
             return Indicator.robust_percentile(values, current)
@@ -101,19 +76,11 @@ class Indicator:
 
     @staticmethod
     def robust_percentile(series: np.ndarray, val: float) -> float:
-        
-
-
         if len(series) < 5:
             return 50.0
         return (np.sum(series < val) / len(series)) * 100
 
-
 class MomentumIndicator(Indicator):
-   
-
-
-
     def calculate(self) -> float:
         spy = self.dm.get_history("SPY")
         if spy.empty or len(spy) < 125:
@@ -128,14 +95,9 @@ class MomentumIndicator(Indicator):
         momentum_series = ((spy["Close"] - spy["SMA125"]) / spy["SMA125"]).dropna().values
         return Indicator.scale_with_history(momentum_series, momentum_current)
 
-
 class NewHighsLowsIndicator(Indicator):
-    
-
-
-
     def calculate(self) -> float:
-        tickers = get_sp500_tickers()[:50]
+        tickers = get_nasdaq_tickers()
         ratios = []
         for ticker in tickers:
             df = self.dm.get_history(ticker)
@@ -151,16 +113,9 @@ class NewHighsLowsIndicator(Indicator):
         pseudo_history = np.random.beta(5, 5, 52)
         return Indicator.scale_with_history(pseudo_history, raw)
 
-
-
-
 class MarketBreadthIndicator(Indicator):
-    
-
-
-
     def calculate(self) -> float:
-        tickers = get_sp500_tickers()[:50]
+        tickers = get_nasdaq_tickers()
         scores = []
         for ticker in tickers:
             df = self.dm.get_history(ticker)
@@ -182,12 +137,7 @@ class MarketBreadthIndicator(Indicator):
         pseudo_history = np.random.beta(5, 5, 52) * 100
         return Indicator.scale_with_history(pseudo_history, raw)
 
-
 class PutCallIndicator(Indicator):
-    
-
-
-
     def calculate(self) -> float:
         spy = yf.Ticker("SPY")
         try:
@@ -206,11 +156,7 @@ class PutCallIndicator(Indicator):
         score = 100 / (1 + np.exp((ratio - 0.7) * 10))
         return score
 
-
 class JunkBondIndicator(Indicator):
-    
-
-
     def calculate(self) -> float:
         baa_df = self.dm.get_fred_series("BAA")
         treas_df = self.dm.get_fred_series("DGS10")
@@ -229,11 +175,7 @@ class JunkBondIndicator(Indicator):
         scaled = Indicator.scale_with_history(spread_history, spread_current)
         return max(0, min(100, 100 - scaled))
 
-
 class VIXIndicator(Indicator):
-    
-
-
     def calculate(self) -> float:
         vix_df = self.dm.get_history("^VIX")
         if vix_df.empty:
@@ -243,11 +185,7 @@ class VIXIndicator(Indicator):
         scaled = Indicator.scale_with_history(vix_history, current_vix)
         return max(0, min(100, 100 - scaled))
 
-
 class SafeHavenIndicator(Indicator):
-    
-
-
     def calculate(self) -> float:
         tlt_df = self.dm.get_history("TLT")
         spy_df = self.dm.get_history("SPY")
@@ -269,11 +207,7 @@ class SafeHavenIndicator(Indicator):
         scaled = Indicator.scale_with_history(diffs, current_diff)
         return max(0, min(100, 100 - scaled))
 
-
 class CompositeSentiment:
-    
-
-
     def __init__(self, data_manager: DataManager, weights: List[float] = None) -> None:
         self.dm = data_manager
         self.indicators = [
@@ -288,9 +222,6 @@ class CompositeSentiment:
         self.weights = weights if weights is not None else [1.0] * len(self.indicators)
 
     def compute(self) -> Tuple[float, List[float]]:
-        
-
-
         values = []
         for ind in self.indicators:
             try:
@@ -302,11 +233,7 @@ class CompositeSentiment:
         composite = max(0, min(100, composite))
         return composite, values
 
-
 def gauge_plot(value: float) -> None:
-    
-
-    
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=value,
@@ -323,35 +250,26 @@ def gauge_plot(value: float) -> None:
     ))
     fig.show()
 
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Compute composite market sentiment.")
-    parser.add_argument("--fred_key", type=str, default="054d79a6dffb592fd462713e98e04d85",
-                        help="FRED API key")
-    parser.add_argument("--start_date", type=str, default=None,
-                        help="Start date in YYYY-MM-DD format (default: 3 years ago)")
-    parser.add_argument("--end_date", type=str, default=None,
-                        help="End date in YYYY-MM-DD format (default: yesterday)")
+    parser.add_argument("--fred_key", type=str, default="054d79a6dffb592fd462713e98e04d85", help="FRED API key")
+    parser.add_argument("--start_date", type=str, default=None, help="Start date in YYYY-MM-DD format (default: 3 years ago)")
+    parser.add_argument("--end_date", type=str, default=None, help="End date in YYYY-MM-DD format (default: yesterday)")
     args = parser.parse_args()
-
     today = datetime.date.today()
     default_end = today - datetime.timedelta(days=1)
     default_start = default_end - datetime.timedelta(days=3 * 365)
     start_date = args.start_date if args.start_date else str(default_start)
     end_date = args.end_date if args.end_date else str(default_end)
-
     logging.info("Using date range from %s to %s", start_date, end_date)
     dm = DataManager(start_date, end_date, args.fred_key)
     composite = CompositeSentiment(dm)
     comp_value, individual_values = composite.compute()
-    indicator_names = ["Momentum", "NewHighsLows", "MarketBreadth",
-                         "PutCall", "JunkBond", "VIX", "SafeHaven"]
-
+    indicator_names = ["Momentum", "NewHighsLows", "MarketBreadth", "PutCall", "JunkBond", "VIX", "SafeHaven"]
     for name, val in zip(indicator_names, individual_values):
         print(f"{name:15s}: {round(val, 2)}")
     print("Composite Sentiment:", round(comp_value, 2))
     gauge_plot(comp_value)
-
 
 if __name__ == "__main__":
     main()
